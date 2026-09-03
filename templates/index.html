@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TAPAGO - Pago Seguro</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; font-family: 'Inter', sans-serif; margin: 0; padding: 0; }
+        body { background-color: #0f0c1b; color: #ffffff; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .checkout-card { background: #18142b; border: 1px solid #2a244d; border-radius: 16px; width: 100%; max-width: 380px; padding: 28px; box-shadow: 0 20px 40px rgba(0,0,0,0.5); text-align: center; }
+        .badge-security { display: inline-flex; align-items: center; gap: 6px; background: rgba(0, 230, 118, 0.1); color: #00e676; border: 1px solid rgba(0, 230, 118, 0.2); padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 16px; }
+        .brand { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; color: #ffffff; margin-bottom: 4px; }
+        .brand span { color: #00e676; }
+        .merchant-info { color: #9a94be; font-size: 13px; margin-bottom: 24px; }
+        .form-group { text-align: left; margin-bottom: 16px; }
+        label { display: block; font-size: 12px; font-weight: 600; color: #b2accf; margin-bottom: 6px; text-transform: uppercase; }
+        .input-wrapper { position: relative; }
+        input { width: 100%; background: #0f0c1b; border: 1.5px solid #2a244d; border-radius: 10px; padding: 14px 14px 14px 40px; color: #fff; font-size: 15px; outline: none; transition: all 0.2s; }
+        input:focus { border-color: #7b2cbf; box-shadow: 0 0 0 3px rgba(123, 44, 191, 0.2); }
+        .icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); width: 18px; opacity: 0.5; }
+        .btn-pay { width: 100%; background: linear-gradient(135deg, #7b2cbf 0%, #5a189a 100%); color: #ffffff; border: none; border-radius: 10px; padding: 16px; font-size: 15px; font-weight: 700; cursor: pointer; transition: transform 0.1s, box-shadow 0.2s; margin-top: 8px; }
+        .btn-pay:hover { box-shadow: 0 8px 20px rgba(123, 44, 191, 0.4); }
+        .btn-pay:active { transform: scale(0.98); }
+        #mensaje { margin-top: 18px; font-size: 13px; font-weight: 600; min-height: 20px; }
+        .footer-trust { margin-top: 24px; border-top: 1px solid #2a244d; padding-top: 16px; display: flex; justify-content: center; align-items: center; gap: 12px; opacity: 0.6; font-size: 11px; color: #b2accf; }
+    </style>
+</head>
+<body>
+
+<div class="checkout-card">
+    <div class="badge-security">
+        🔒 Pago Cifrado Directo
+    </div>
+    
+    <div class="brand">TAPA<span>GO</span></div>
+    <div class="merchant-info">Abono directo a la cuenta del comercio</div>
+
+    <div class="form-group">
+        <label>Número Nequi</label>
+        <div class="input-wrapper">
+            <span class="icon">📱</span>
+            <input type="tel" id="celular" placeholder="300 000 0000" maxlength="10" required>
+        </div>
+    </div>
+
+    <div class="form-group">
+        <label>Monto a Pagar ($COP)</label>
+        <div class="input-wrapper">
+            <span class="icon">💲</span>
+            <input type="number" id="monto" placeholder="0" required>
+        </div>
+    </div>
+
+    <button class="btn-pay" onclick="enviarPago()">CONFIRMAR EN NEQUI</button>
+
+    <div id="mensaje"></div>
+
+    <div class="footer-trust">
+        <span>Conexión Segura A2A</span> • <span>Soporte Nequi Push</span>
+    </div>
+</div>
+
+<script>
+    async function enviarPago() {
+        const celular = document.getElementById('celular').value;
+        const monto = document.getElementById('monto').value;
+        const mensajeDiv = document.getElementById('mensaje');
+
+        if (!celular || !monto) {
+            mensajeDiv.style.color = "#ff5252";
+            mensajeDiv.innerText = "⚠️ Por favor completa celular y monto.";
+            return;
+        }
+
+        mensajeDiv.style.color = "#b2accf";
+        mensajeDiv.innerText = "⏳ Enviando solicitud a tu app Nequi...";
+
+        try {
+            const res = await fetch('/api/cobrar', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ celular, monto })
+            });
+
+            const data = await res.json();
+
+            if (data.exito) {
+                mensajeDiv.style.color = "#00e676";
+                mensajeDiv.innerText = `✅ Solicitud enviada a tu Nequi. Ref: ${data.referencia}`;
+            } else {
+                mensajeDiv.style.color = "#ff5252";
+                mensajeDiv.innerText = "❌ No se pudo procesar la solicitud.";
+            }
+        } catch (err) {
+            mensajeDiv.style.color = "#ff5252";
+            mensajeDiv.innerText = "❌ Error de conexión con la red de cobro.";
+        }
+    }
+</script>
+
+</body>
+</html>
