@@ -61,6 +61,31 @@ def obtener_pagos():
         'exito': True,
         'pagos': pagos_recientes[:10]  # Devuelve los últimos 10 pagos
     })
+@app.route('/api/webhook-notificacion', methods=['POST'])
+def webhook_notificacion():
+    data = request.get_json() or {}
+    texto_notificacion = data.get('texto', '')
+    
+    # Ejemplo de texto de notificación Nequi:
+    # "¡Te enviaron $ 15.000 de 3242504709!" o "Recibiste $15000"
+    print(f"Notificación recibida: {texto_notificacion}")
+    
+    # Buscamos si hay transacciones pendientes en nuestro registro que coincidan
+    for pago in TRANSACCIONES:
+        if pago['estado'] == 'PENDIENTE':
+            # Si el monto o celular coincide con la notificación
+            monto_str = str(int(pago['monto']))
+            if monto_str in texto_notificacion.replace('.', '').replace(',', ''):
+                pago['estado'] = 'APROBADO'
+                return jsonify({'exito': True, 'mensaje': 'Pago aprobado automáticamente'}), 200
 
+    # Si no había cobro registrado en la pantalla, creamos el pago como aprobado directamente
+    TRANSACCIONES.insert(0, {
+        'celular': 'Transferencia Directa',
+        'monto': 'Verificado',
+        'referencia': 'PUSH-AUTO',
+        'estado': 'APROBADO'
+    })
+    return jsonify({'exito': True, 'mensaje': 'Notificación procesada'}), 200
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
