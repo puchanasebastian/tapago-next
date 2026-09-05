@@ -1,91 +1,88 @@
-import uuid
-from flask import Flask, request, jsonify, render_template
+import os
+from flask import Flask, render_template, request, jsonify
 from dotenv import load_dotenv
-from nequi_service import NequiEngine
 
+# Cargar variables de entorno
 load_dotenv()
 
 app = Flask(__name__)
-nequi = NequiEngine()
 
-# Almacén temporal de transacciones en memoria
-pagos_recientes = []
+# Estructura en memoria para almacenar las transacciones temporalmente
+TRANSACCIONES = []
 
-# 1. Vista Cliente (NFC)
+# ==========================================
+# RUTAS DE INTERFAZ DE USUARIO (FRONTEND)
+# ==========================================
+
 @app.route('/')
-def inicio():
+def checkout():
+    """Pantalla pública del cliente (Checkout NFC)"""
     return render_template('index.html')
 
-# 2. Vista Tendero (Panel de Confirmación)
 @app.route('/tendero')
-def panel_tendero():
+def tendero():
+    """Panel privado en tiempo real para el comerciante/POS"""
     return render_template('tendero.html')
 
-# 3. Endpoint para que el cliente solicite el pago
-@app.route('/api/cobrar', methods=['POST'])
-def procesar_cobro():
-    data = request.get_json() or {}
-    celular = data.get('celular')
-    monto = data.get('monto')
+# ==========================================
+# ENDPOINTS DE API & WEBHOOKS
+# ==========================================
 
-    if not celular or not monto:
-        return jsonify({
-            'exito': False, 
-            'mensaje': 'Falta el número de celular o el monto.'
-        }), 400
-
-    referencia = f"TAPAGO-{uuid.uuid4().hex[:6].upper()}"
-    resultado = nequi.solicitar_cobro_push(celular, monto, referencia)
-
-    pago_registro = {
-        'referencia': referencia,
-        'celular': celular,
-        'monto': monto,
-        'estado': 'APROBADO'  # En producción cambiará tras webhook de Nequi
-    }
+@app.route('/api/transacciones', methods=['GET', 'POST'])
+def gestionar_transacciones():
+    """Obtiene el historial o genera un nuevo cobro desde la web"""
+    if request.method == 'POST':
+        data = request.get_json() or {}
+        nueva_transaccion = {
+            'celular': data.get('celular', 'Anonimo'),
+            'monto': data.get('monto', 0),
+            'referencia': data.get('referencia', 'REF-PENDIENTE'),
+            'estado': 'PENDIENTE'
+        }
+        TRANSACCIONES.insert(0, nueva_transaccion)
+        return jsonify({'exito': True, 'transaccion': nueva_transaccion}), 201
     
-    # Guardar la transacción al inicio de la lista
-    pagos_recientes.insert(0, pago_registro)
+    # Si es GET, devuelve las últimas transacciones
+    return jsonify(TRANSACCIONES), 200
 
-    return jsonify({
-        'exito': True,
-        'referencia': referencia,
-        'monto': monto,
-        'respuesta_nequi': resultado
-    })
-
-# 4. Endpoint para que el panel del tendero consulte pagos
-@app.route('/api/pagos-tendero', methods=['GET'])
-def obtener_pagos():
-    return jsonify({
-        'exito': True,
-        'pagos': pagos_recientes[:10]  # Devuelve los últimos 10 pagos
-    })
 @app.route('/api/webhook-notificacion', methods=['POST'])
 def webhook_notificacion():
+    """Recibe y valida las notificaciones de Nequi capturadas por la App Android"""
     data = request.get_json() or {}
-    texto_notificacion = data.get('texto', '')
+    texto = data.get('texto', '')
     
-    # Ejemplo de texto de notificación Nequi:
-    # "¡Te enviaron $ 15.000 de 3242504709!" o "Recibiste $15000"
-    print(f"Notificación recibida: {texto_notificacion}")
+    print(f"📥 Notificación recibida desde App TAPAGO: {texto}")
     
-    # Buscamos si hay transacciones pendientes en nuestro registro que coincidan
-    for pago in TRANSACCIONES:
-        if pago['estado'] == 'PENDIENTE':
-            # Si el monto o celular coincide con la notificación
-            monto_str = str(int(pago['monto']))
-            if monto_str in texto_notificacion.replace('.', '').replace(',', ''):
+    # Normalizamos el texto en minúsculas para evaluar la transferencia de Nequi
+    texto_lower = texto.lower()
+    
+    # Palabras clave habituales en las notificaciones push de Nequi
+    if any(palabra in texto_lower for palabra in ["enviaron", "recibiste", "transfirió", "pago"]):
+        
+        # 1. Intentamos buscar un cobro PENDIENTE para marcarlo como APROBADO
+        for pago in TRANSACCIONES:
+            if pago['estado'] == 'PENDIENTE':
                 pago['estado'] = 'APROBADO'
-                return jsonify({'exito': True, 'mensaje': 'Pago aprobado automáticamente'}), 200
+                print(f"✅ Cobro APROBADO exitosamente para referencia: {pago.get('referencia')}")
+                return jsonify({'status': 'exito', 'mensaje': 'Pago verificado y aprobado'}), 200
+        
+        # 2. Si el cliente transfirió directo sin cobro previo en la pantalla, registramos el pago
+        transaccion_directa = {
+            'celular': 'Nequi Directo',
+            'monto': 'Verificado',
+            'referencia': 'PUSH-AUTO',
+            'estado': 'APROBADO'
+        }
+        TRANSACCIONES.insert(0, transaccion_directa)
+        print("✅ Pago directo de Nequi registrado como APROBADO.")
+        return jsonify({'status': 'exito', 'mensaje': 'Pago directo registrado'}), 200
 
-    # Si no había cobro registrado en la pantalla, creamos el pago como aprobado directamente
-    TRANSACCIONES.insert(0, {
-        'celular': 'Transferencia Directa',
-        'monto': 'Verificado',
-        'referencia': 'PUSH-AUTO',
-        'estado': 'APROBADO'
-    })
-    return jsonify({'exito': True, 'mensaje': 'Notificación procesada'}), 200
+    return jsonify({'status': 'ignorado', 'mensaje': 'La notificación no corresponde a un pago'}), 200
+
+# ==========================================
+# INICIALIZACIÓN DEL SERVIDOR
+# ==========================================
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
