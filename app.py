@@ -3,14 +3,47 @@ import re
 from datetime import datetime, timezone, timedelta
 from flask import Flask, render_template, request, jsonify
 from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # Cargar variables de entorno
 load_dotenv()
 
 app = Flask(__name__)
 
-# Estructura en memoria para almacenar las transacciones temporalmente
-TRANSACCIONES = []
+# Configuración de Conexión a PostgreSQL en Render
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+def get_db_connection():
+    """Establece conexión con la base de datos PostgreSQL"""
+    conn = psycopg2.connect(DATABASE_URL)
+    return conn
+
+def init_db():
+    """Crea la tabla de transacciones si no existe"""
+    if DATABASE_URL:
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS transacciones (
+                    id SERIAL PRIMARY KEY,
+                    celular VARCHAR(100),
+                    monto INT,
+                    referencia VARCHAR(150),
+                    estado VARCHAR(50),
+                    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            ''')
+            conn.commit()
+            cur.close()
+            conn.close()
+            print("✅ Base de datos PostgreSQL inicializada correctamente.")
+        except Exception as e:
+            print(f"❌ Error al inicializar la base de datos: {e}")
+
+# Inicializar DB al arrancar el servidor
+init_db()
 
 # ==========================================
 # RUTAS DE INTERFAZ DE USUARIO (FRONTEND)
@@ -32,26 +65,57 @@ def tendero():
 
 @app.route('/api/transacciones', methods=['GET', 'POST'])
 def gestionar_transacciones():
-    """Obtiene el historial o genera un nuevo cobro desde la web"""
-    global TRANSACCIONES
+    """Obtiene el historial desde SQL o genera un nuevo cobro desde la web"""
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
     if request.method == 'POST':
         data = request.get_json() or {}
-        nueva_transaccion = {
-            'celular': data.get('celular', 'Anonimo'),
-            'monto': data.get('monto', 0),
-            'referencia': data.get('referencia', 'REF-PENDIENTE'),
-            'estado': 'PENDIENTE'
+        celular = data.get('celular', 'Anonimo')
+        monto = data.get('monto', 0)
+        referencia = data.get('referencia', 'REF-PENDIENTE')
+        estado = 'PENDIENTE'
+
+        cur.execute(
+            "INSERT INTO transacciones (celular, monto, referencia, estado) VALUES (%s, %s, %s, %s) RETURNING id;",
+            (celular, monto, referencia, estado)
+        )
+        conn.commit()
+        nueva_id = cur.fetchone()['id']
+        cur.close()
+        conn.close()
+
+        nueva_tx = {
+            'id': nueva_id,
+            'celular': celular,
+            'monto': monto,
+            'referencia': referencia,
+            'estado': estado
         }
-        TRANSACCIONES.insert(0, nueva_transaccion)
-        return jsonify({'exito': True, 'transaccion': nueva_transaccion}), 201
+        return jsonify({'exito': True, 'transaccion': nueva_tx}), 201
     
-    # Si es GET, devuelve las últimas transacciones
-    return jsonify(TRANSACCIONES), 200
+    # GET: Devuelve las últimas 50 transacciones desde la BD
+    cur.execute("SELECT id, celular, monto, referencia, estado, fecha FROM transacciones ORDER BY id DESC LIMIT 50;")
+    filas = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    # Formatear respuesta para el frontend
+    transacciones_list = []
+    for f in filas:
+        transacciones_list.append({
+            'id': f['id'],
+            'celular': f['celular'],
+            'monto': f['monto'],
+            'referencia': f['referencia'],
+            'estado': f['estado']
+        })
+
+    return jsonify(transacciones_list), 200
 
 @app.route('/api/webhook-notificacion', methods=['POST'])
 def webhook_notificacion():
     """Recibe, analiza y clasifica las notificaciones capturadas por la App Android"""
-    global TRANSACCIONES
     data = request.get_json() or {}
     texto = data.get('texto', '') or data.get('mensaje', '')
     
@@ -61,13 +125,11 @@ def webhook_notificacion():
         return jsonify({'status': 'ignorado', 'mensaje': 'Sin contenido'}), 400
 
     texto_lower = texto.lower()
-    
-    # Palabras clave para validar si es un movimiento financiero
     palabras_clave = ["enviaron", "recibiste", "transfirió", "pago", "bre-b", "transfiya", "aceptaste"]
     
     if any(palabra in texto_lower for palabra in palabras_clave):
         
-        # 1. EXTRACCIÓN DINÁMICA DEL MONTO ($X.XXX)
+        # 1. EXTRACCIÓN DINÁMICA DEL MONTO
         monto_match = re.search(r'\$\s?([\d\.,]+)', texto)
         monto_str = monto_match.group(1) if monto_match else "0"
         
@@ -76,9 +138,8 @@ def webhook_notificacion():
         except ValueError:
             monto_limpio = 0
 
-        # 2. IDENTIFICACIÓN DE ORIGEN / BANCO / REMITENTE
+        # 2. IDENTIFICACIÓN DE ORIGEN / BANCO
         remitente = "Nequi Directo"
-        
         if "bancolombia" in texto_lower:
             remitente = "Bancolombia"
         elif "daviplata" in texto_lower:
@@ -90,35 +151,45 @@ def webhook_notificacion():
         elif "qr" in texto_lower:
             remitente = "Pago QR Nequi"
         elif " de " in texto_lower:
-            # Intenta capturar nombres completos tipo "de Juan Perez"
             nombre_match = re.search(r'de\s+([A-Za-z\s]+?)(?=\s+(te|desde|por|a|\$|$))', texto, re.IGNORECASE)
             if nombre_match:
                 remitente = nombre_match.group(1).strip()
 
-        # 3. HORA LOCAL COLOMBIA (UTC-5) Y REFERENCIA
+        # 3. HORA LOCAL COLOMBIA (UTC-5)
         zona_colombia = timezone(timedelta(hours=-5))
         hora_actual = datetime.now(zona_colombia).strftime("%I:%M %p")
         ref_id = f"PUSH-{int(datetime.now().timestamp())}"
+        referencia_completa = f"{ref_id} • {hora_actual}"
 
-        # 4. SI EXISTE UN COBRO PENDIENTE, LO ACTUALIZAMOS
-        for pago in TRANSACCIONES:
-            if pago.get('estado') == 'PENDIENTE':
-                pago['estado'] = 'APROBADO'
-                pago['celular'] = remitente
-                if monto_limpio > 0:
-                    pago['monto'] = monto_limpio
-                print(f"✅ Cobro PENDIENTE APROBADO: {pago.get('referencia')}")
-                return jsonify({'status': 'exito', 'mensaje': 'Pago pendiente aprobado'}), 200
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # 5. SI NO HAY COBRO PREVIO, REGISTRAMOS TRANSACCIÓN DIRECTA DETALLADA
-        transaccion_directa = {
-            'celular': remitente,
-            'monto': monto_limpio if monto_limpio > 0 else 'Verificado',
-            'referencia': f"{ref_id} • {hora_actual}",
-            'estado': 'APROBADO'
-        }
-        TRANSACCIONES.insert(0, transaccion_directa)
-        print(f"✅ Pago directo registrado a las {hora_actual}: ${monto_limpio} COP desde {remitente}")
+        # 4. SI EXISTE UN COBRO PENDIENTE, LO MARCAMOS COMO APROBADO
+        cur.execute("SELECT * FROM transacciones WHERE estado = 'PENDIENTE' ORDER BY id DESC LIMIT 1;")
+        pago_pendiente = cur.fetchone()
+
+        if pago_pendiente:
+            monto_final = monto_limpio if monto_limpio > 0 else pago_pendiente['monto']
+            cur.execute(
+                "UPDATE transacciones SET estado = 'APROBADO', celular = %s, monto = %s WHERE id = %s;",
+                (remitente, monto_final, pago_pendiente['id'])
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            print(f"✅ Cobro PENDIENTE ID {pago_pendiente['id']} APROBADO.")
+            return jsonify({'status': 'exito', 'mensaje': 'Pago pendiente aprobado'}), 200
+
+        # 5. REGISTRO DE TRANSACCIÓN DIRECTA
+        cur.execute(
+            "INSERT INTO transacciones (celular, monto, referencia, estado) VALUES (%s, %s, %s, %s);",
+            (remitente, monto_limpio, referencia_completa, 'APROBADO')
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        print(f"✅ Pago directo guardado en BD: ${monto_limpio} COP de {remitente}")
         return jsonify({'status': 'exito', 'mensaje': 'Pago directo registrado'}), 200
 
     return jsonify({'status': 'ignorado', 'mensaje': 'La notificación no corresponde a un pago'}), 200
