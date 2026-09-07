@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from flask import Flask, render_template, request, jsonify
 from dotenv import load_dotenv
 
@@ -118,7 +118,7 @@ def webhook_notificacion():
             'estado': 'APROBADO'
         }
         TRANSACCIONES.insert(0, transaccion_directa)
-        print(f"✅ Pago directo registrado: ${monto_limpio} COP desde {remitente}")
+        print(f"✅ Pago directo registrado a las {hora_actual}: ${monto_limpio} COP desde {remitente}")
         return jsonify({'status': 'exito', 'mensaje': 'Pago directo registrado'}), 200
 
     return jsonify({'status': 'ignorado', 'mensaje': 'La notificación no corresponde a un pago'}), 200
