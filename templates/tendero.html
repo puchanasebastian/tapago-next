@@ -1,11 +1,48 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TAPAGO - Terminal Comercio</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; font-family: 'Inter', sans-serif; margin: 0; padding: 0; }
+        body { background-color: #0a0812; color: #ffffff; padding: 24px; min-height: 100vh; }
+        .header { display: flex; justify-content: space-between; align-items: center; max-width: 600px; margin: 0 auto 24px auto; border-bottom: 1px solid #1f1b36; padding-bottom: 16px; }
+        .logo { font-size: 22px; font-weight: 700; }
+        .logo span { color: #00e676; }
+        .status-dot { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: #00e676; background: rgba(0,230,118,0.1); padding: 6px 12px; border-radius: 20px; }
+        .dot { width: 8px; height: 8px; background-color: #00e676; border-radius: 50%; box-shadow: 0 0 10px #00e676; }
+        .container { max-width: 600px; margin: 0 auto; }
+        .pago-card { background: #141024; border: 1px solid #231c3d; border-radius: 12px; padding: 20px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; transition: transform 0.2s; }
+        .pago-card:first-child { border-color: #00e676; box-shadow: 0 0 20px rgba(0,230,118,0.15); }
+        .monto { font-size: 22px; font-weight: 700; color: #ffffff; }
+        .meta-info { font-size: 12px; color: #8e87b8; margin-top: 4px; }
+        .badge-status { background: #00e676; color: #0a0812; font-weight: 700; font-size: 11px; padding: 6px 12px; border-radius: 6px; text-transform: uppercase; }
+        .empty-state { text-align: center; color: #5b5382; padding: 40px; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <div class="logo">TAPA<span>GO</span> POS</div>
+    <div class="status-dot">
+        <div class="dot"></div> Terminal Activo
+    </div>
+</div>
+
+<div class="container">
+    <div id="lista-pagos">
+        <div class="empty-state">Escuchando transacciones entrantes...</div>
+    </div>
+</div>
+
 <script>
     async function consultarPagos() {
         try {
-            // 1. Ruta corregida a /api/transacciones
             const res = await fetch('/api/transacciones');
             const pagos = await res.json();
 
-            // 2. Evaluamos directamente el array devuelto por Flask
             if (Array.isArray(pagos) && pagos.length > 0) {
                 const lista = document.getElementById('lista-pagos');
                 lista.innerHTML = "";
@@ -31,3 +68,6 @@
     setInterval(consultarPagos, 1500);
     consultarPagos();
 </script>
+
+</body>
+</html>
