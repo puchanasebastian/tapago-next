@@ -95,8 +95,9 @@ def webhook_notificacion():
             if nombre_match:
                 remitente = nombre_match.group(1).strip()
 
-        # 3. HORA Y REFERENCIA DE REGISTRO
-        hora_actual = datetime.now().strftime("%I:%M %p")
+        # 3. HORA LOCAL COLOMBIA (UTC-5) Y REFERENCIA
+        zona_colombia = timezone(timedelta(hours=-5))
+        hora_actual = datetime.now(zona_colombia).strftime("%I:%M %p")
         ref_id = f"PUSH-{int(datetime.now().timestamp())}"
 
         # 4. SI EXISTE UN COBRO PENDIENTE, LO ACTUALIZAMOS
