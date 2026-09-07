@@ -1,4 +1,6 @@
 import os
+import re
+from datetime import datetime
 from flask import Flask, render_template, request, jsonify
 from dotenv import load_dotenv
 
@@ -48,35 +50,74 @@ def gestionar_transacciones():
 
 @app.route('/api/webhook-notificacion', methods=['POST'])
 def webhook_notificacion():
-    """Recibe y valida las notificaciones de Nequi capturadas por la App Android"""
+    """Recibe, analiza y clasifica las notificaciones capturadas por la App Android"""
     global TRANSACCIONES
     data = request.get_json() or {}
-    texto = data.get('texto', '')
+    texto = data.get('texto', '') or data.get('mensaje', '')
     
     print(f"📥 Notificación recibida desde App TAPAGO: {texto}")
     
-    # Normalizamos el texto en minúsculas para evaluar la transferencia de Nequi
+    if not texto:
+        return jsonify({'status': 'ignorado', 'mensaje': 'Sin contenido'}), 400
+
     texto_lower = texto.lower()
     
-    # Palabras clave habituales en las notificaciones push de Nequi / Bre-B
-    if any(palabra in texto_lower for palabra in ["enviaron", "recibiste", "transfirió", "pago", "bre-b"]):
+    # Palabras clave para validar si es un movimiento financiero
+    palabras_clave = ["enviaron", "recibiste", "transfirió", "pago", "bre-b", "transfiya", "aceptaste"]
+    
+    if any(palabra in texto_lower for palabra in palabras_clave):
         
-        # 1. Intentamos buscar un cobro PENDIENTE para marcarlo como APROBADO
+        # 1. EXTRACCIÓN DINÁMICA DEL MONTO ($X.XXX)
+        monto_match = re.search(r'\$\s?([\d\.,]+)', texto)
+        monto_str = monto_match.group(1) if monto_match else "0"
+        
+        try:
+            monto_limpio = int(re.sub(r'[^\d]', '', monto_str))
+        except ValueError:
+            monto_limpio = 0
+
+        # 2. IDENTIFICACIÓN DE ORIGEN / BANCO / REMITENTE
+        remitente = "Nequi Directo"
+        
+        if "bancolombia" in texto_lower:
+            remitente = "Bancolombia"
+        elif "daviplata" in texto_lower:
+            remitente = "Daviplata"
+        elif "transfiya" in texto_lower:
+            remitente = "Transfiya"
+        elif "bre-b" in texto_lower:
+            remitente = "Bre-B (Interbancario)"
+        elif "qr" in texto_lower:
+            remitente = "Pago QR Nequi"
+        elif " de " in texto_lower:
+            # Intenta capturar nombres completos tipo "de Juan Perez"
+            nombre_match = re.search(r'de\s+([A-Za-z\s]+?)(?=\s+(te|desde|por|a|\$|$))', texto, re.IGNORECASE)
+            if nombre_match:
+                remitente = nombre_match.group(1).strip()
+
+        # 3. HORA Y REFERENCIA DE REGISTRO
+        hora_actual = datetime.now().strftime("%I:%M %p")
+        ref_id = f"PUSH-{int(datetime.now().timestamp())}"
+
+        # 4. SI EXISTE UN COBRO PENDIENTE, LO ACTUALIZAMOS
         for pago in TRANSACCIONES:
             if pago.get('estado') == 'PENDIENTE':
                 pago['estado'] = 'APROBADO'
-                print(f"✅ Cobro APROBADO exitosamente para referencia: {pago.get('referencia')}")
-                return jsonify({'status': 'exito', 'mensaje': 'Pago verificado y aprobado'}), 200
-        
-        # 2. Si el cliente transfirió directo sin cobro previo en la pantalla, registramos el pago
+                pago['celular'] = remitente
+                if monto_limpio > 0:
+                    pago['monto'] = monto_limpio
+                print(f"✅ Cobro PENDIENTE APROBADO: {pago.get('referencia')}")
+                return jsonify({'status': 'exito', 'mensaje': 'Pago pendiente aprobado'}), 200
+
+        # 5. SI NO HAY COBRO PREVIO, REGISTRAMOS TRANSACCIÓN DIRECTA DETALLADA
         transaccion_directa = {
-            'celular': 'Nequi Directo',
-            'monto': 'Verificado',
-            'referencia': 'PUSH-AUTO',
+            'celular': remitente,
+            'monto': monto_limpio if monto_limpio > 0 else 'Verificado',
+            'referencia': f"{ref_id} • {hora_actual}",
             'estado': 'APROBADO'
         }
         TRANSACCIONES.insert(0, transaccion_directa)
-        print("✅ Pago directo de Nequi registrado como APROBADO.")
+        print(f"✅ Pago directo registrado: ${monto_limpio} COP desde {remitente}")
         return jsonify({'status': 'exito', 'mensaje': 'Pago directo registrado'}), 200
 
     return jsonify({'status': 'ignorado', 'mensaje': 'La notificación no corresponde a un pago'}), 200
