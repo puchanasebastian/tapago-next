@@ -1,7 +1,9 @@
 import os
 import re
+import csv
+from io import StringIO
 from datetime import datetime, timezone, timedelta
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -100,7 +102,6 @@ def gestionar_transacciones():
     cur.close()
     conn.close()
 
-    # Formatear respuesta para el frontend
     transacciones_list = []
     for f in filas:
         transacciones_list.append({
@@ -112,6 +113,63 @@ def gestionar_transacciones():
         })
 
     return jsonify(transacciones_list), 200
+
+@app.route('/api/resumen-hoy', methods=['GET'])
+def resumen_hoy():
+    """Retorna el total sumado de ventas aprobadas hoy y el conteo"""
+    zona_colombia = timezone(timedelta(hours=-5))
+    hoy_inicio = datetime.now(zona_colombia).replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    cur.execute(
+        "SELECT SUM(monto) as total_ventas, COUNT(id) as total_tx FROM transacciones WHERE estado = 'APROBADO' AND fecha >= %s;",
+        (hoy_inicio,)
+    )
+    resultado = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    total_ventas = resultado['total_ventas'] or 0
+    total_tx = resultado['total_tx'] or 0
+
+    return jsonify({
+        'total_ventas': total_ventas,
+        'total_tx': total_tx
+    }), 200
+
+@app.route('/api/exportar-excel', methods=['GET'])
+def exportar_excel():
+    """Genera y descarga un archivo CSV compatible con Excel con el historial completo"""
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, celular, monto, referencia, estado, fecha FROM transacciones ORDER BY id DESC;")
+    filas = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    si = StringIO()
+    writer = csv.writer(si)
+    # Encabezados
+    writer.writerow(['ID', 'Banco / Remitente', 'Monto (COP)', 'Referencia', 'Estado', 'Fecha'])
+
+    for f in filas:
+        writer.writerow([
+            f['id'],
+            f['celular'],
+            f['monto'],
+            f['referencia'],
+            f['estado'],
+            f['fecha'].strftime("%Y-%m-%d %H:%M:%S") if f['fecha'] else ''
+        ])
+
+    output = si.getvalue()
+    return Response(
+        output,
+        mimetype="text/csv",
+        headers={"Content-disposition": "attachment; filename=reporte_ventas_tapago.csv"}
+    )
 
 @app.route('/api/webhook-notificacion', methods=['POST'])
 def webhook_notificacion():
