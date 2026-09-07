@@ -31,6 +31,7 @@ def tendero():
 @app.route('/api/transacciones', methods=['GET', 'POST'])
 def gestionar_transacciones():
     """Obtiene el historial o genera un nuevo cobro desde la web"""
+    global TRANSACCIONES
     if request.method == 'POST':
         data = request.get_json() or {}
         nueva_transaccion = {
@@ -48,6 +49,7 @@ def gestionar_transacciones():
 @app.route('/api/webhook-notificacion', methods=['POST'])
 def webhook_notificacion():
     """Recibe y valida las notificaciones de Nequi capturadas por la App Android"""
+    global TRANSACCIONES
     data = request.get_json() or {}
     texto = data.get('texto', '')
     
@@ -56,12 +58,12 @@ def webhook_notificacion():
     # Normalizamos el texto en minúsculas para evaluar la transferencia de Nequi
     texto_lower = texto.lower()
     
-    # Palabras clave habituales en las notificaciones push de Nequi
-    if any(palabra in texto_lower for palabra in ["enviaron", "recibiste", "transfirió", "pago"]):
+    # Palabras clave habituales en las notificaciones push de Nequi / Bre-B
+    if any(palabra in texto_lower for palabra in ["enviaron", "recibiste", "transfirió", "pago", "bre-b"]):
         
         # 1. Intentamos buscar un cobro PENDIENTE para marcarlo como APROBADO
         for pago in TRANSACCIONES:
-            if pago['estado'] == 'PENDIENTE':
+            if pago.get('estado') == 'PENDIENTE':
                 pago['estado'] = 'APROBADO'
                 print(f"✅ Cobro APROBADO exitosamente para referencia: {pago.get('referencia')}")
                 return jsonify({'status': 'exito', 'mensaje': 'Pago verificado y aprobado'}), 200
