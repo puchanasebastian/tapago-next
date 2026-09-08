@@ -9,24 +9,39 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask_mail import Mail, Message
+from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
 
 load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'tapago-secret-key-2026')
 
+# Configuración de Base de Datos
 DATABASE_URL = os.environ.get('DATABASE_URL')
+
+# Configuración de Flask-Mail (Gmail)
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
+app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_USERNAME')
+
+mail = Mail(app)
+serializer = URLSafeTimedSerializer(app.secret_key)
 
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
 class Usuario(UserMixin):
-    def __init__(self, id, nombre, correo, nequi):
+    def __init__(self, id, nombre, correo, nequi, verificado=False):
         self.id = id
         self.nombre = nombre
         self.correo = correo
         self.nequi = nequi
+        self.verificado = verificado
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -34,11 +49,11 @@ def load_user(user_id):
     if not conn: return None
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id, nombre, correo, nequi FROM usuarios WHERE id = %s;", (user_id,))
+        cur.execute("SELECT id, nombre, correo, nequi, verificado FROM usuarios WHERE id = %s;", (user_id,))
         u = cur.fetchone()
         cur.close()
         if u:
-            return Usuario(u['id'], u['nombre'], u['correo'], u['nequi'])
+            return Usuario(u['id'], u['nombre'], u['correo'], u['nequi'], u['verificado'])
         return None
     finally:
         conn.close()
@@ -63,9 +78,12 @@ def init_db():
                     correo VARCHAR(120) UNIQUE NOT NULL,
                     nequi VARCHAR(20) NOT NULL,
                     password VARCHAR(255) NOT NULL,
+                    verificado BOOLEAN DEFAULT FALSE,
                     fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             ''')
+            # Asegurar que la columna 'verificado' exista si la tabla ya estaba creada
+            cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS verificado BOOLEAN DEFAULT FALSE;")
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS transacciones (
                     id SERIAL PRIMARY KEY,
@@ -84,6 +102,22 @@ def init_db():
 
 init_db()
 
+def enviar_correo_confirmacion(email):
+    token = serializer.dumps(email, salt='email-confirm-salt')
+    link = url_for('confirmar_email', token=token, _external=True)
+    msg = Message('Confirma tu cuenta - TAPAGO POS', recipients=[email])
+    msg.html = f'''
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
+            <h2 style="color: #00d26a;">¡Bienvenido a TAPAGO POS!</h2>
+            <p>Gracias por registrarte. Para activar tu cuenta y empezar a recibir pagos, haz clic en el siguiente botón:</p>
+            <p style="text-align: center; margin: 30px 0;">
+                <a href="{link}" style="background-color: #00d26a; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Confirmar Mi Correo</a>
+            </p>
+            <p style="font-size: 12px; color: #777;">Este enlace expirará en 1 hora. Si no creaste esta cuenta, puedes ignorar este mensaje.</p>
+        </div>
+    '''
+    mail.send(msg)
+
 @app.route('/registro', methods=['GET', 'POST'])
 def registro():
     if request.method == 'POST':
@@ -100,16 +134,21 @@ def registro():
         try:
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO usuarios (nombre, correo, nequi, password) VALUES (%s, %s, %s, %s) RETURNING id;",
+                "INSERT INTO usuarios (nombre, correo, nequi, password, verificado) VALUES (%s, %s, %s, %s, FALSE) RETURNING id;",
                 (nombre, correo, nequi, hash_password)
             )
-            user_id = cur.fetchone()[0]
             conn.commit()
             cur.close()
 
-            usuario = Usuario(user_id, nombre, correo, nequi)
-            login_user(usuario)
-            return redirect(url_for('tendero'))
+            # Enviar correo de confirmación
+            try:
+                enviar_correo_confirmacion(correo)
+                flash('Registro exitoso. Te hemos enviado un correo de activación. Por favor revisa tu bandeja de entrada o spam.', 'info')
+            except Exception as e:
+                print(f"❌ Error enviando correo: {e}")
+                flash('Usuario creado, pero hubo un problema al enviar el correo de activación.', 'warning')
+
+            return redirect(url_for('login'))
         except psycopg2.IntegrityError:
             conn.rollback()
             flash('El correo electrónico ya está registrado.')
@@ -118,6 +157,30 @@ def registro():
             conn.close()
 
     return render_template('registro.html')
+
+@app.route('/confirmar-email/<token>')
+def confirmar_email(token):
+    try:
+        email = serializer.loads(token, salt='email-confirm-salt', max_age=3600) # Expira en 1 hora
+    except SignatureExpired:
+        flash('El enlace de confirmación ha expirado. Solicita un nuevo registro o verificación.', 'danger')
+        return redirect(url_for('login'))
+    except BadTimeSignature:
+        flash('El enlace de confirmación no es válido.', 'danger')
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE usuarios SET verificado = TRUE WHERE correo = %s;", (email,))
+            conn.commit()
+            cur.close()
+            flash('¡Tu cuenta ha sido activada correctamente! Ya puedes iniciar sesión.', 'success')
+        finally:
+            conn.close()
+            
+    return redirect(url_for('login'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -136,7 +199,11 @@ def login():
             cur.close()
 
             if u and check_password_hash(u['password'], password):
-                usuario = Usuario(u['id'], u['nombre'], u['correo'], u['nequi'])
+                if not u.get('verificado', False):
+                    flash('Debes activar tu cuenta desde el correo de confirmación enviado a tu email antes de ingresar.', 'warning')
+                    return redirect(url_for('login'))
+
+                usuario = Usuario(u['id'], u['nombre'], u['correo'], u['nequi'], u['verificado'])
                 login_user(usuario)
                 return redirect(url_for('tendero'))
             else:
@@ -280,7 +347,7 @@ def webhook_notificacion():
         try:
             cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("SELECT id FROM usuarios ORDER BY id DESC LIMIT 1;")
+            cur.execute("SELECT id FROM usuarios WHERE verificado = TRUE ORDER BY id DESC LIMIT 1;")
             user = cur.fetchone()
             user_id = user['id'] if user else 1
 
