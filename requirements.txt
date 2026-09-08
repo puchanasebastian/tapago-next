@@ -1,6 +1,8 @@
-flask
-gunicorn
-requests
-python-dotenv
-psycopg2-binary
+Flask
 Flask-Login
+Flask-Mail
+psycopg2-binary
+python-dotenv
+gunicorn
+werkzeug
+itsdangerous
