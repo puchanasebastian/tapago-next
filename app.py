@@ -17,7 +17,6 @@ app.secret_key = os.environ.get('SECRET_KEY', 'tapago-secret-key-2026')
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
-# Configuración Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
@@ -32,24 +31,31 @@ class Usuario(UserMixin):
 @login_manager.user_loader
 def load_user(user_id):
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT id, nombre, correo, nequi FROM usuarios WHERE id = %s;", (user_id,))
-    u = cur.fetchone()
-    cur.close()
-    conn.close()
-    if u:
-        return Usuario(u['id'], u['nombre'], u['correo'], u['nequi'])
-    return None
+    if not conn: return None
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, nombre, correo, nequi FROM usuarios WHERE id = %s;", (user_id,))
+        u = cur.fetchone()
+        cur.close()
+        if u:
+            return Usuario(u['id'], u['nombre'], u['correo'], u['nequi'])
+        return None
+    finally:
+        conn.close()
 
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL)
+    try:
+        return psycopg2.connect(DATABASE_URL)
+    except Exception as e:
+        print(f"❌ Error conectando a BD: {e}")
+        return None
 
 def init_db():
     if DATABASE_URL:
+        conn = get_db_connection()
+        if not conn: return
         try:
-            conn = get_db_connection()
             cur = conn.cursor()
-            # Tabla Usuarios
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS usuarios (
                     id SERIAL PRIMARY KEY,
@@ -60,7 +66,6 @@ def init_db():
                     fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             ''')
-            # Tabla Transacciones Vinculada
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS transacciones (
                     id SERIAL PRIMARY KEY,
@@ -74,16 +79,10 @@ def init_db():
             ''')
             conn.commit()
             cur.close()
+        finally:
             conn.close()
-            print("✅ Tablas inicializadas correctamente.")
-        except Exception as e:
-            print(f"❌ Error al inicializar BD: {e}")
 
 init_db()
-
-# ==========================================
-# AUTENTICACIÓN Y REGISTRO
-# ==========================================
 
 @app.route('/registro', methods=['GET', 'POST'])
 def registro():
@@ -92,12 +91,14 @@ def registro():
         correo = request.form.get('correo').lower().strip()
         nequi = request.form.get('nequi').strip()
         password = request.form.get('password')
-
         hash_password = generate_password_hash(password)
 
         conn = get_db_connection()
-        cur = conn.cursor()
+        if not conn:
+            flash('Error de conexión a la base de datos.')
+            return redirect(url_for('registro'))
         try:
+            cur = conn.cursor()
             cur.execute(
                 "INSERT INTO usuarios (nombre, correo, nequi, password) VALUES (%s, %s, %s, %s) RETURNING id;",
                 (nombre, correo, nequi, hash_password)
@@ -105,17 +106,16 @@ def registro():
             user_id = cur.fetchone()[0]
             conn.commit()
             cur.close()
-            conn.close()
 
             usuario = Usuario(user_id, nombre, correo, nequi)
             login_user(usuario)
             return redirect(url_for('tendero'))
         except psycopg2.IntegrityError:
             conn.rollback()
-            cur.close()
-            conn.close()
             flash('El correo electrónico ya está registrado.')
             return redirect(url_for('registro'))
+        finally:
+            conn.close()
 
     return render_template('registro.html')
 
@@ -126,19 +126,24 @@ def login():
         password = request.form.get('password')
 
         conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT * FROM usuarios WHERE correo = %s;", (correo,))
-        u = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if u and check_password_hash(u['password'], password):
-            usuario = Usuario(u['id'], u['nombre'], u['correo'], u['nequi'])
-            login_user(usuario)
-            return redirect(url_for('tendero'))
-        else:
-            flash('Correo o contraseña incorrectos.')
+        if not conn:
+            flash('Error de conexión a la base de datos.')
             return redirect(url_for('login'))
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT * FROM usuarios WHERE correo = %s;", (correo,))
+            u = cur.fetchone()
+            cur.close()
+
+            if u and check_password_hash(u['password'], password):
+                usuario = Usuario(u['id'], u['nombre'], u['correo'], u['nequi'])
+                login_user(usuario)
+                return redirect(url_for('tendero'))
+            else:
+                flash('Correo o contraseña incorrectos.')
+                return redirect(url_for('login'))
+        finally:
+            conn.close()
 
     return render_template('login.html')
 
@@ -147,10 +152,6 @@ def login():
 def logout():
     logout_user()
     return redirect(url_for('login'))
-
-# ==========================================
-# RUTAS DE INTERFAZ
-# ==========================================
 
 @app.route('/')
 def checkout():
@@ -161,37 +162,35 @@ def checkout():
 def tendero():
     return render_template('tendero.html', usuario=current_user)
 
-# ==========================================
-# API Y ENDPOINTS
-# ==========================================
-
 @app.route('/api/transacciones', methods=['GET', 'POST'])
 @login_required
 def gestionar_transacciones():
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    if not conn: return jsonify([]), 500
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    if request.method == 'POST':
-        data = request.get_json() or {}
-        celular = data.get('celular', 'Anonimo')
-        monto = data.get('monto', 0)
-        referencia = data.get('referencia', 'REF-PENDIENTE')
-        
-        cur.execute(
-            "INSERT INTO transacciones (usuario_id, celular, monto, referencia, estado) VALUES (%s, %s, %s, %s, 'PENDIENTE') RETURNING id;",
-            (current_user.id, celular, monto, referencia)
-        )
-        conn.commit()
-        nueva_id = cur.fetchone()['id']
+        if request.method == 'POST':
+            data = request.get_json() or {}
+            celular = data.get('celular', 'Anonimo')
+            monto = data.get('monto', 0)
+            referencia = data.get('referencia', 'REF-PENDIENTE')
+            
+            cur.execute(
+                "INSERT INTO transacciones (usuario_id, celular, monto, referencia, estado) VALUES (%s, %s, %s, %s, 'PENDIENTE') RETURNING id;",
+                (current_user.id, celular, monto, referencia)
+            )
+            conn.commit()
+            nueva_id = cur.fetchone()['id']
+            cur.close()
+            return jsonify({'exito': True, 'id': nueva_id}), 201
+
+        cur.execute("SELECT id, celular, monto, referencia, estado, fecha FROM transacciones WHERE usuario_id = %s ORDER BY id DESC LIMIT 50;", (current_user.id,))
+        filas = cur.fetchall()
         cur.close()
+        return jsonify(filas), 200
+    finally:
         conn.close()
-        return jsonify({'exito': True, 'id': nueva_id}), 201
-
-    cur.execute("SELECT id, celular, monto, referencia, estado, fecha FROM transacciones WHERE usuario_id = %s ORDER BY id DESC LIMIT 50;", (current_user.id,))
-    filas = cur.fetchall()
-    cur.close()
-    conn.close()
-    return jsonify(filas), 200
 
 @app.route('/api/resumen-hoy', methods=['GET'])
 @login_required
@@ -200,45 +199,51 @@ def resumen_hoy():
     hoy_inicio = datetime.now(zona_colombia).replace(hour=0, minute=0, second=0, microsecond=0)
     
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute(
-        "SELECT SUM(monto) as total_ventas, COUNT(id) as total_tx FROM transacciones WHERE usuario_id = %s AND estado = 'APROBADO' AND fecha >= %s;",
-        (current_user.id, hoy_inicio)
-    )
-    res = cur.fetchone()
-    cur.close()
-    conn.close()
+    if not conn: return jsonify({'total_ventas': 0, 'total_tx': 0}), 500
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT SUM(monto) as total_ventas, COUNT(id) as total_tx FROM transacciones WHERE usuario_id = %s AND estado = 'APROBADO' AND fecha >= %s;",
+            (current_user.id, hoy_inicio)
+        )
+        res = cur.fetchone()
+        cur.close()
 
-    return jsonify({
-        'total_ventas': res['total_ventas'] or 0,
-        'total_tx': res['total_tx'] or 0
-    }), 200
+        return jsonify({
+            'total_ventas': res['total_ventas'] or 0,
+            'total_tx': res['total_tx'] or 0
+        }), 200
+    finally:
+        conn.close()
 
 @app.route('/api/exportar-excel', methods=['GET'])
 @login_required
 def exportar_excel():
     conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT id, celular, monto, referencia, estado, fecha FROM transacciones WHERE usuario_id = %s ORDER BY id DESC;", (current_user.id,))
-    filas = cur.fetchall()
-    cur.close()
-    conn.close()
+    if not conn: return "Error de BD", 500
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, celular, monto, referencia, estado, fecha FROM transacciones WHERE usuario_id = %s ORDER BY id DESC;", (current_user.id,))
+        filas = cur.fetchall()
+        cur.close()
 
-    si = StringIO()
-    writer = csv.writer(si)
-    writer.writerow(['ID', 'Banco / Remitente', 'Monto (COP)', 'Referencia', 'Estado', 'Fecha'])
+        si = StringIO()
+        writer = csv.writer(si)
+        writer.writerow(['ID', 'Banco / Remitente', 'Monto (COP)', 'Referencia', 'Estado', 'Fecha'])
 
-    for f in filas:
-        writer.writerow([
-            f['id'], f['celular'], f['monto'], f['referencia'], f['estado'],
-            f['fecha'].strftime("%Y-%m-%d %H:%M:%S") if f['fecha'] else ''
-        ])
+        for f in filas:
+            writer.writerow([
+                f['id'], f['celular'], f['monto'], f['referencia'], f['estado'],
+                f['fecha'].strftime("%Y-%m-%d %H:%M:%S") if f['fecha'] else ''
+            ])
 
-    return Response(
-        si.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-disposition": f"attachment; filename=ventas_{current_user.nequi}.csv"}
-    )
+        return Response(
+            si.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-disposition": f"attachment; filename=ventas_{current_user.nequi}.csv"}
+        )
+    finally:
+        conn.close()
 
 @app.route('/api/webhook-notificacion', methods=['POST'])
 def webhook_notificacion():
@@ -271,31 +276,33 @@ def webhook_notificacion():
         referencia_completa = f"PUSH-{int(datetime.now().timestamp())} • {hora_actual}"
 
         conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        if not conn: return jsonify({'status': 'error bd'}), 500
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Asignar la transacción al último usuario registrado activo (o mapeado por Nequi)
-        cur.execute("SELECT id FROM usuarios ORDER BY id DESC LIMIT 1;")
-        user = cur.fetchone()
-        user_id = user['id'] if user else 1
+            cur.execute("SELECT id FROM usuarios ORDER BY id DESC LIMIT 1;")
+            user = cur.fetchone()
+            user_id = user['id'] if user else 1
 
-        cur.execute("SELECT * FROM transacciones WHERE estado = 'PENDIENTE' AND usuario_id = %s ORDER BY id DESC LIMIT 1;", (user_id,))
-        pago_pendiente = cur.fetchone()
+            cur.execute("SELECT * FROM transacciones WHERE estado = 'PENDIENTE' AND usuario_id = %s ORDER BY id DESC LIMIT 1;", (user_id,))
+            pago_pendiente = cur.fetchone()
 
-        if pago_pendiente:
-            cur.execute(
-                "UPDATE transacciones SET estado = 'APROBADO', celular = %s, monto = %s WHERE id = %s;",
-                (remitente, monto_limpio if monto_limpio > 0 else pago_pendiente['monto'], pago_pendiente['id'])
-            )
-        else:
-            cur.execute(
-                "INSERT INTO transacciones (usuario_id, celular, monto, referencia, estado) VALUES (%s, %s, %s, %s, 'APROBADO');",
-                (user_id, remitente, monto_limpio, referencia_completa)
-            )
+            if pago_pendiente:
+                cur.execute(
+                    "UPDATE transacciones SET estado = 'APROBADO', celular = %s, monto = %s WHERE id = %s;",
+                    (remitente, monto_limpio if monto_limpio > 0 else pago_pendiente['monto'], pago_pendiente['id'])
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO transacciones (usuario_id, celular, monto, referencia, estado) VALUES (%s, %s, %s, %s, 'APROBADO');",
+                    (user_id, remitente, monto_limpio, referencia_completa)
+                )
 
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'status': 'exito'}), 200
+            conn.commit()
+            cur.close()
+            return jsonify({'status': 'exito'}), 200
+        finally:
+            conn.close()
 
     return jsonify({'status': 'ignorado'}), 200
 
