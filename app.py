@@ -144,11 +144,11 @@ def registro():
                     cur.close()
                     return redirect(url_for('login'))
                 else:
-                    # Si existe pero NO está verificado, limpiamos la entrada previa inconclusa
+                    # Limpiar intentos no verificados previos para reintentar sin choque de claves únicas
                     cur.execute("DELETE FROM usuarios WHERE id = %s;", (usuario_existente['id'],))
                     conn.commit()
 
-            # Insertar el nuevo registro pendiente
+            # Insertar usuario pendiente
             cur.execute(
                 "INSERT INTO usuarios (nombre, correo, nequi, password, verificado) VALUES (%s, %s, %s, %s, FALSE) RETURNING id;",
                 (nombre, correo, nequi, hash_password)
@@ -156,12 +156,12 @@ def registro():
             conn.commit()
             cur.close()
 
-            # Enviar correo de activación
+            # Enviar correo de confirmación
             try:
                 enviar_correo_confirmacion(correo)
             except Exception as e:
                 print(f"❌ Error enviando correo: {e}")
-                flash('Usuario creado, pero hubo un problema al enviar el correo. Puedes pedir el reenvío.', 'warning')
+                flash('Usuario creado, pero hubo un problema al enviar el correo. Puedes solicitar un reenvío.', 'warning')
 
             return redirect(url_for('pantalla_espera_verificacion', email=correo))
 
@@ -198,7 +198,7 @@ def reenviar_verificacion():
             if u and not u['verificado']:
                 try:
                     enviar_correo_confirmacion(correo)
-                    flash('¡Correo de activación reenviado con éxito! Revisa tu bandeja de entrada y spam.', 'success')
+                    flash('¡Correo de activación reenviado con éxito! Revisa tu bandeja de entrada o spam.', 'success')
                 except Exception as e:
                     print(f"❌ Error al reenviar correo: {e}")
                     flash('Hubo un problema al reenviar el correo. Inténtalo más tarde.', 'danger')
