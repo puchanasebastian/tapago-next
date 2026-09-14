@@ -21,11 +21,11 @@ app.secret_key = os.environ.get('SECRET_KEY', 'tapago-secret-key-2026')
 # Configuración de Base de Datos
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
-# Configuración de Flask-Mail (Gmail)
+# Configuración de Flask-Mail (Puerto SSL 465 para evitar bloqueos)
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USE_SSL'] = False
+app.config['MAIL_PORT'] = 465
+app.config['MAIL_USE_TLS'] = False
+app.config['MAIL_USE_SSL'] = True
 app.config['MAIL_TIMEOUT'] = 10
 app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
 app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
@@ -104,11 +104,11 @@ def init_db():
 
 init_db()
 
-def enviar_correo_async(app_obj, msg):
-    with app_obj.app_context():
+def enviar_correo_async(app_context, msg):
+    with app_context:
         try:
             mail.send(msg)
-            print("✅ Correo de confirmación enviado en segundo plano.")
+            print("✅ Correo de confirmación enviado exitosamente.")
         except Exception as e:
             print(f"❌ Error enviando correo en segundo plano: {e}")
 
@@ -126,8 +126,8 @@ def enviar_correo_confirmacion(email):
             <p style="font-size: 12px; color: #777;">Este enlace expirará en 1 hora. Si no creaste esta cuenta, puedes ignorar este mensaje.</p>
         </div>
     '''
-    # Se ejecuta en un hilo secundario para evitar el bloqueo de la respuesta HTTP
-    thread = threading.Thread(target=enviar_correo_async, args=(app, msg))
+    # Se pasa el contexto de la app para que el hilo responda de forma independiente
+    thread = threading.Thread(target=enviar_correo_async, args=(app.app_context(), msg))
     thread.start()
 
 @app.route('/registro', methods=['GET', 'POST'])
@@ -165,6 +165,7 @@ def registro():
             conn.commit()
             cur.close()
 
+            # Enviar correo en segundo plano
             enviar_correo_confirmacion(correo)
 
             return redirect(url_for('pantalla_espera_verificacion', email=correo))
@@ -345,7 +346,7 @@ def exportar_excel():
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT id, celular, monto, referencia, estado, fecha FROM transacciones WHERE usuario_id = %s ORDER BY id DESC;", (current_user.id,))
-        filas = cur.fetchall()
+        filas = filas = cur.fetchall()
         cur.close()
 
         si = StringIO()
