@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verifica tu correo - TAPAGO POS</title>
+    <style>
+        body { background-color: #0f172a; color: white; font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+        .card { background: #1e293b; padding: 30px; border-radius: 12px; width: 90%; max-width: 420px; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.5); border: 1px solid #334155; }
+        h2 { color: #00d26a; margin-top: 0; }
+        p { color: #cbd5e1; font-size: 14px; line-height: 1.5; }
+        .email-highlight { color: #38bdf8; font-weight: bold; word-break: break-all; }
+        .alert { background-color: rgba(0, 210, 106, 0.1); color: #00d26a; border: 1px solid #00d26a; padding: 12px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; line-height: 1.4; }
+        .btn { display: inline-block; width: 100%; padding: 12px; background: #00d26a; color: #000; font-weight: bold; border-radius: 6px; text-decoration: none; margin-top: 15px; box-sizing: border-box; text-align: center; border: none; }
+        .btn-secondary { background: transparent; color: #38bdf8; border: 1px solid #38bdf8; margin-top: 10px; cursor: pointer; font-size: 14px; }
+        .btn-secondary:hover { background: rgba(56, 189, 248, 0.1); }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>📩 ¡Casi listo!</h2>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <p>Hemos enviado un enlace de activación a:<br><span class="email-highlight">{{ email }}</span></p>
+        <p>Abre tu correo y haz clic en el enlace para activar tu cuenta. Revisa también tu carpeta de <strong>Spam / Correo no deseado</strong>.</p>
+        
+        <form action="/reenviar-verificacion" method="POST">
+            <input type="hidden" name="correo" value="{{ email }}">
+            <button type="submit" class="btn btn-secondary">Reenviar correo de activación</button>
+        </form>
+
+        <a href="/login" class="btn">Ir al Inicio de Sesión</a>
+    </div>
+</body>
+</html>
