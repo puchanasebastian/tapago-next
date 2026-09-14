@@ -1,6 +1,7 @@
 import os
 import re
 import csv
+import threading
 from io import StringIO
 from datetime import datetime, timezone, timedelta
 from flask import Flask, render_template, request, jsonify, Response, redirect, url_for, flash
@@ -84,7 +85,6 @@ def init_db():
                     fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             ''')
-            # Asegurar que la columna 'verificado' exista si la tabla ya estaba creada
             cur.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS verificado BOOLEAN DEFAULT FALSE;")
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS transacciones (
@@ -104,6 +104,14 @@ def init_db():
 
 init_db()
 
+def enviar_correo_async(app_obj, msg):
+    with app_obj.app_context():
+        try:
+            mail.send(msg)
+            print("✅ Correo de confirmación enviado en segundo plano.")
+        except Exception as e:
+            print(f"❌ Error enviando correo en segundo plano: {e}")
+
 def enviar_correo_confirmacion(email):
     token = serializer.dumps(email, salt='email-confirm-salt')
     link = url_for('confirmar_email', token=token, _external=True)
@@ -118,7 +126,9 @@ def enviar_correo_confirmacion(email):
             <p style="font-size: 12px; color: #777;">Este enlace expirará en 1 hora. Si no creaste esta cuenta, puedes ignorar este mensaje.</p>
         </div>
     '''
-    mail.send(msg)
+    # Se ejecuta en un hilo secundario para evitar el bloqueo de la respuesta HTTP
+    thread = threading.Thread(target=enviar_correo_async, args=(app, msg))
+    thread.start()
 
 @app.route('/registro', methods=['GET', 'POST'])
 def registro():
@@ -136,7 +146,6 @@ def registro():
         try:
             cur = conn.cursor(cursor_factory=RealDictCursor)
             
-            # Verificar si el correo ya existe
             cur.execute("SELECT id, verificado FROM usuarios WHERE correo = %s;", (correo,))
             usuario_existente = cur.fetchone()
 
@@ -146,11 +155,9 @@ def registro():
                     cur.close()
                     return redirect(url_for('login'))
                 else:
-                    # Limpiar intentos no verificados previos para reintentar sin choque de claves únicas
                     cur.execute("DELETE FROM usuarios WHERE id = %s;", (usuario_existente['id'],))
                     conn.commit()
 
-            # Insertar usuario pendiente
             cur.execute(
                 "INSERT INTO usuarios (nombre, correo, nequi, password, verificado) VALUES (%s, %s, %s, %s, FALSE) RETURNING id;",
                 (nombre, correo, nequi, hash_password)
@@ -158,12 +165,7 @@ def registro():
             conn.commit()
             cur.close()
 
-            # Enviar correo de confirmación
-            try:
-                enviar_correo_confirmacion(correo)
-            except Exception as e:
-                print(f"❌ Error enviando correo: {e}")
-                flash('Usuario creado, pero hubo un problema al enviar el correo. Puedes solicitar un reenvío.', 'warning')
+            enviar_correo_confirmacion(correo)
 
             return redirect(url_for('pantalla_espera_verificacion', email=correo))
 
@@ -198,12 +200,8 @@ def reenviar_verificacion():
             cur.close()
 
             if u and not u['verificado']:
-                try:
-                    enviar_correo_confirmacion(correo)
-                    flash('¡Correo de activación reenviado con éxito! Revisa tu bandeja de entrada o spam.', 'success')
-                except Exception as e:
-                    print(f"❌ Error al reenviar correo: {e}")
-                    flash('Hubo un problema al reenviar el correo. Inténtalo más tarde.', 'danger')
+                enviar_correo_confirmacion(correo)
+                flash('¡Correo de activación reenviado! Revisa tu bandeja de entrada o spam.', 'success')
             elif u and u['verificado']:
                 flash('Tu cuenta ya está activa. Puedes iniciar sesión.', 'success')
                 return redirect(url_for('login'))
@@ -219,7 +217,7 @@ def confirmar_email(token):
     try:
         email = serializer.loads(token, salt='email-confirm-salt', max_age=3600)
     except SignatureExpired:
-        flash('El enlace de confirmación ha expirado. Regístrate nuevamente para recibir un nuevo enlace.', 'danger')
+        flash('El enlace de confirmación ha expirado. Regístrate nuevamente.', 'danger')
         return redirect(url_for('registro'))
     except BadTimeSignature:
         flash('El enlace de confirmación no es válido.', 'danger')
