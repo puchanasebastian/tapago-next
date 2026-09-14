@@ -122,17 +122,33 @@ def enviar_correo_confirmacion(email):
 def registro():
     if request.method == 'POST':
         nombre = request.form.get('nombre')
-        correo = request.form.get('correo').lower().strip()
-        nequi = request.form.get('nequi').strip()
+        correo = request.form.get('correo', '').lower().strip()
+        nequi = request.form.get('nequi', '').strip()
         password = request.form.get('password')
         hash_password = generate_password_hash(password)
 
         conn = get_db_connection()
         if not conn:
-            flash('Error de conexión a la base de datos.')
+            flash('Error de conexión a la base de datos.', 'danger')
             return redirect(url_for('registro'))
         try:
-            cur = conn.cursor()
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            
+            # Verificar si el correo ya existe
+            cur.execute("SELECT id, verificado FROM usuarios WHERE correo = %s;", (correo,))
+            usuario_existente = cur.fetchone()
+
+            if usuario_existente:
+                if usuario_existente['verificado']:
+                    flash('El correo electrónico ya está registrado y verificado. Inicia sesión.', 'warning')
+                    cur.close()
+                    return redirect(url_for('login'))
+                else:
+                    # Si existe pero NO está verificado, limpiamos la entrada previa inconclusa
+                    cur.execute("DELETE FROM usuarios WHERE id = %s;", (usuario_existente['id'],))
+                    conn.commit()
+
+            # Insertar el nuevo registro pendiente
             cur.execute(
                 "INSERT INTO usuarios (nombre, correo, nequi, password, verificado) VALUES (%s, %s, %s, %s, FALSE) RETURNING id;",
                 (nombre, correo, nequi, hash_password)
@@ -140,31 +156,69 @@ def registro():
             conn.commit()
             cur.close()
 
-            # Enviar correo de confirmación
+            # Enviar correo de activación
             try:
                 enviar_correo_confirmacion(correo)
-                flash('Registro exitoso. Te hemos enviado un correo de activación. Por favor revisa tu bandeja de entrada o spam.', 'info')
             except Exception as e:
                 print(f"❌ Error enviando correo: {e}")
-                flash('Usuario creado, pero hubo un problema al enviar el correo de activación.', 'warning')
+                flash('Usuario creado, pero hubo un problema al enviar el correo. Puedes pedir el reenvío.', 'warning')
 
-            return redirect(url_for('login'))
-        except psycopg2.IntegrityError:
+            return redirect(url_for('pantalla_espera_verificacion', email=correo))
+
+        except Exception as e:
             conn.rollback()
-            flash('El correo electrónico ya está registrado.')
+            print(f"❌ Error en registro: {e}")
+            flash('Ocurrió un error al procesar tu registro.', 'danger')
             return redirect(url_for('registro'))
         finally:
             conn.close()
 
     return render_template('registro.html')
 
+@app.route('/espera-verificacion')
+def pantalla_espera_verificacion():
+    email = request.args.get('email', '')
+    return render_template('espera_verificacion.html', email=email)
+
+@app.route('/reenviar-verificacion', methods=['POST'])
+def reenviar_verificacion():
+    correo = request.form.get('correo', '').lower().strip()
+    if not correo:
+        flash('Dirección de correo no válida.', 'danger')
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT verificado FROM usuarios WHERE correo = %s;", (correo,))
+            u = cur.fetchone()
+            cur.close()
+
+            if u and not u['verificado']:
+                try:
+                    enviar_correo_confirmacion(correo)
+                    flash('¡Correo de activación reenviado con éxito! Revisa tu bandeja de entrada y spam.', 'success')
+                except Exception as e:
+                    print(f"❌ Error al reenviar correo: {e}")
+                    flash('Hubo un problema al reenviar el correo. Inténtalo más tarde.', 'danger')
+            elif u and u['verificado']:
+                flash('Tu cuenta ya está activa. Puedes iniciar sesión.', 'success')
+                return redirect(url_for('login'))
+            else:
+                flash('No se encontró ninguna cuenta pendiente para este correo.', 'warning')
+        finally:
+            conn.close()
+
+    return redirect(url_for('pantalla_espera_verificacion', email=correo))
+
 @app.route('/confirmar-email/<token>')
 def confirmar_email(token):
     try:
-        email = serializer.loads(token, salt='email-confirm-salt', max_age=3600) # Expira en 1 hora
+        email = serializer.loads(token, salt='email-confirm-salt', max_age=3600)
     except SignatureExpired:
-        flash('El enlace de confirmación ha expirado. Solicita un nuevo registro o verificación.', 'danger')
-        return redirect(url_for('login'))
+        flash('El enlace de confirmación ha expirado. Regístrate nuevamente para recibir un nuevo enlace.', 'danger')
+        return redirect(url_for('registro'))
     except BadTimeSignature:
         flash('El enlace de confirmación no es válido.', 'danger')
         return redirect(url_for('login'))
@@ -179,18 +233,18 @@ def confirmar_email(token):
             flash('¡Tu cuenta ha sido activada correctamente! Ya puedes iniciar sesión.', 'success')
         finally:
             conn.close()
-            
+
     return redirect(url_for('login'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        correo = request.form.get('correo').lower().strip()
+        correo = request.form.get('correo', '').lower().strip()
         password = request.form.get('password')
 
         conn = get_db_connection()
         if not conn:
-            flash('Error de conexión a la base de datos.')
+            flash('Error de conexión a la base de datos.', 'danger')
             return redirect(url_for('login'))
         try:
             cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -200,14 +254,14 @@ def login():
 
             if u and check_password_hash(u['password'], password):
                 if not u.get('verificado', False):
-                    flash('Debes activar tu cuenta desde el correo de confirmación enviado a tu email antes de ingresar.', 'warning')
-                    return redirect(url_for('login'))
+                    flash('Debes activar tu cuenta desde el correo antes de ingresar.', 'warning')
+                    return redirect(url_for('pantalla_espera_verificacion', email=correo))
 
                 usuario = Usuario(u['id'], u['nombre'], u['correo'], u['nequi'], u['verificado'])
                 login_user(usuario)
                 return redirect(url_for('tendero'))
             else:
-                flash('Correo o contraseña incorrectos.')
+                flash('Correo o contraseña incorrectos.', 'danger')
                 return redirect(url_for('login'))
         finally:
             conn.close()
