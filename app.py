@@ -11,8 +11,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
-from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
+import resend
 
 load_dotenv()
 
@@ -22,17 +22,9 @@ app.secret_key = os.environ.get('SECRET_KEY', 'tapago-secret-key-2026')
 # Configuración de Base de Datos
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
-# Configuración de Flask-Mail (Gmail SSL Directo)
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 465
-app.config['MAIL_USE_TLS'] = False
-app.config['MAIL_USE_SSL'] = True
-app.config['MAIL_TIMEOUT'] = 15
-app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
-app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_USERNAME')
+# Configuración de Resend API Key
+resend.api_key = os.environ.get('RESEND_API_KEY')
 
-mail = Mail(app)
 serializer = URLSafeTimedSerializer(app.secret_key)
 
 login_manager = LoginManager()
@@ -105,31 +97,36 @@ def init_db():
 
 init_db()
 
-def enviar_correo_async(app_context, msg):
-    with app_context:
-        try:
-            print(f"📧 Intentando enviar correo a: {msg.recipients} desde {app.config['MAIL_USERNAME']}...")
-            mail.send(msg)
-            print("✅ Correo de confirmación enviado exitosamente por SMTP.")
-        except Exception as e:
-            print(f"❌ ERROR CRÍTICO ENVIANDO CORREO:")
-            print(traceback.format_exc())
+def enviar_correo_async(email, link):
+    try:
+        print(f"📧 Intentando enviar correo vía Resend a: {email}...")
+        params = {
+            "from": "TAPAGO POS <onboarding@resend.dev>",
+            "to": [email],
+            "subject": "Confirma tu cuenta - TAPAGO POS",
+            "html": f'''
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
+                    <h2 style="color: #00d26a;">¡Bienvenido a TAPAGO POS!</h2>
+                    <p>Gracias por registrarte. Para activar tu cuenta y empezar a recibir pagos, haz clic en el siguiente botón:</p>
+                    <p style="text-align: center; margin: 30px 0;">
+                        <a href="{link}" style="background-color: #00d26a; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Confirmar Mi Correo</a>
+                    </p>
+                    <p style="font-size: 12px; color: #777;">Este enlace expirará en 1 hora. Si no creaste esta cuenta, puedes ignorar este mensaje.</p>
+                </div>
+            '''
+        }
+        res = resend.Emails.send(params)
+        print(f"✅ Correo enviado exitosamente con Resend. Respuesta: {res}")
+    except Exception as e:
+        print(f"❌ ERROR CRÍTICO ENVIANDO CON RESEND:")
+        print(traceback.format_exc())
 
 def enviar_correo_confirmacion(email):
     token = serializer.dumps(email, salt='email-confirm-salt')
     link = url_for('confirmar_email', token=token, _external=True)
-    msg = Message('Confirma tu cuenta - TAPAGO POS', recipients=[email])
-    msg.html = f'''
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
-            <h2 style="color: #00d26a;">¡Bienvenido a TAPAGO POS!</h2>
-            <p>Gracias por registrarte. Para activar tu cuenta y empezar a recibir pagos, haz clic en el siguiente botón:</p>
-            <p style="text-align: center; margin: 30px 0;">
-                <a href="{link}" style="background-color: #00d26a; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold;">Confirmar Mi Correo</a>
-            </p>
-            <p style="font-size: 12px; color: #777;">Este enlace expirará en 1 hora. Si no creaste esta cuenta, puedes ignorar este mensaje.</p>
-        </div>
-    '''
-    thread = threading.Thread(target=enviar_correo_async, args=(app.app_context(), msg))
+    
+    # Se envía en segundo plano usando threading para no demorar la respuesta web
+    thread = threading.Thread(target=enviar_correo_async, args=(email, link))
     thread.start()
 
 @app.route('/registro', methods=['GET', 'POST'])
