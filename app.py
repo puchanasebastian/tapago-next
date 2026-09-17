@@ -515,6 +515,9 @@ def webhook_notificacion():
     data = request.get_json() or {}
     texto = data.get('texto', '') or data.get('mensaje', '')
     
+    # AGREGA ESTA LÍNEA PARA VER EL TEXTO EXACTO EN RENDER:
+    print(f"--> NOTIFICACION RECIBIDA DESDE CELULAR: '{texto}'", flush=True)
+    
     if not texto:
         return jsonify({'status': 'ignorado'}), 400
 
