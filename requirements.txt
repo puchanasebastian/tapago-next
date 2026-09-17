@@ -6,3 +6,5 @@ gunicorn
 werkzeug
 itsdangerous
 resend
+authlib
+requests
