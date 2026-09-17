@@ -141,6 +141,84 @@ def enviar_correo_confirmacion(email):
     thread = threading.Thread(target=enviar_correo_async, args=(email, link))
     thread.start()
 
+# --- FUNCIÓN MEJORADA DE EXTRACCIÓN DE NOTIFICACIONES NEQUI / BRE-B / BANCOLOMBIA ---
+def procesar_notificacion_nequi(texto):
+    if not texto:
+        return None
+
+    texto_limpio = " ".join(texto.split())
+
+    # 1. Patrón Nequi a Nequi (Captura nombres como "Juan Aparicio", "Jose Restrepo", etc.)
+    nequi_match = re.search(
+        r'^(?!Te\s+enviaron)(.+?)\s+te\s+envi[oó]\s+\$([\d\.]+)', 
+        texto_limpio, 
+        re.IGNORECASE
+    )
+    if nequi_match:
+        remitente_detectado = nequi_match.group(1).strip()
+        monto_str = nequi_match.group(2).replace('.', '')
+        remitente_clean = re.sub(r'^¡?Te enviaron plata!?\s*', '', remitente_detectado, flags=re.IGNORECASE).strip()
+
+        return {
+            "remitente": remitente_clean if remitente_clean else "Usuario Nequi",
+            "monto": int(monto_str),
+            "canal": "Nequi a Nequi"
+        }
+
+    # 2. Patrón Bre-B (Interbancario: Nu, Lulo, Davivienda, etc.)
+    breb_match = re.search(r'Te\s+enviaron\s+\$([\d\.]+)', texto_limpio, re.IGNORECASE)
+    if breb_match and ("Bre-B" in texto_limpio or "revisa tu saldo" in texto_limpio):
+        monto_str = breb_match.group(1).replace('.', '')
+        return {
+            "remitente": "Bre-B (Interbancario)",
+            "monto": int(monto_str),
+            "canal": "Bre-B"
+        }
+
+    # 3. Patrón Bancolombia
+    bancolombia_match = re.search(r'Te\s+enviaron\s+\$([\d\.]+)\s+desde\s+Bancolombia', texto_limpio, re.IGNORECASE)
+    if bancolombia_match:
+        monto_str = bancolombia_match.group(1).replace('.', '')
+        return {
+            "remitente": "Bancolombia",
+            "monto": int(monto_str),
+            "canal": "Bancolombia"
+        }
+
+    # 4. Patrón Transfiya
+    transfiya_match = re.search(r'de\s+(.+?)\s*$', texto_limpio, re.IGNORECASE)
+    monto_transfiya = re.search(r'\$([\d\.]+)', texto_limpio)
+    if "Transfiya" in texto_limpio and monto_transfiya:
+        monto_str = monto_transfiya.group(1).replace('.', '')
+        remitente = transfiya_match.group(1).strip() if transfiya_match else "Transfiya"
+        return {
+            "remitente": remitente,
+            "monto": int(monto_str),
+            "canal": "Transfiya"
+        }
+
+    # 5. Patrón PSE / Recargas
+    pse_match = re.search(r'recarga\s+por\s+\$([\d\.]+)', texto_limpio, re.IGNORECASE)
+    if pse_match:
+        monto_str = pse_match.group(1).replace('.', '')
+        return {
+            "remitente": "Recarga PSE",
+            "monto": int(monto_str),
+            "canal": "PSE"
+        }
+
+    # 6. Fallback General
+    monto_gen = re.search(r'\$([\d\.]+)', texto_limpio)
+    if monto_gen:
+        monto_str = monto_gen.group(1).replace('.', '')
+        return {
+            "remitente": "Cliente Nequi",
+            "monto": int(monto_str),
+            "canal": "Nequi / General"
+        }
+
+    return None
+
 # RUTA PARA LOGUEARSE CON GOOGLE
 @app.route('/login/google')
 def login_google():
@@ -171,12 +249,10 @@ def google_authorize():
             u = cur.fetchone()
 
             if u:
-                # Si el usuario ya existe, lo marcamos verificado y lo logueamos
                 cur.execute("UPDATE usuarios SET verificado = TRUE WHERE id = %s;", (u['id'],))
                 conn.commit()
                 usuario = Usuario(u['id'], u['nombre'], u['correo'], u['nequi'], True)
             else:
-                # Si es un usuario nuevo, lo registramos directamente como verificado
                 password_dummy = generate_password_hash(os.urandom(16).hex())
                 cur.execute(
                     "INSERT INTO usuarios (nombre, correo, nequi, password, verificado) VALUES (%s, %s, %s, %s, TRUE) RETURNING id;",
@@ -433,6 +509,7 @@ def exportar_excel():
     finally:
         conn.close()
 
+# --- WEBHOOK NOTIFICACIÓN ACTUALIZADO ---
 @app.route('/api/webhook-notificacion', methods=['POST'])
 def webhook_notificacion():
     data = request.get_json() or {}
@@ -441,58 +518,50 @@ def webhook_notificacion():
     if not texto:
         return jsonify({'status': 'ignorado'}), 400
 
-    texto_lower = texto.lower()
-    palabras_clave = ["enviaron", "recibiste", "transfirió", "pago", "bre-b", "transfiya", "aceptaste"]
-    
-    if any(p in texto_lower for p in palabras_clave):
-        monto_match = re.search(r'\$\s?([\d\.,]+)', texto)
-        monto_str = monto_match.group(1) if monto_match else "0"
-        try:
-            monto_limpio = int(re.sub(r'[^\d]', '', monto_str))
-        except ValueError:
-            monto_limpio = 0
+    # Usar el procesador de notificaciones inteligente
+    resultado = procesar_notificacion_nequi(texto)
 
-        remitente = "Nequi Directo"
-        if "bancolombia" in texto_lower: remitente = "Bancolombia"
-        elif "daviplata" in texto_lower: remitente = "Daviplata"
-        elif "transfiya" in texto_lower: remitente = "Transfiya"
-        elif "bre-b" in texto_lower: remitente = "Bre-B (Interbancario)"
-        elif "qr" in texto_lower: remitente = "Pago QR Nequi"
+    if not resultado:
+        return jsonify({'status': 'ignorado', 'reason': 'Formato no reconocido'}), 200
 
-        zona_colombia = timezone(timedelta(hours=-5))
-        hora_actual = datetime.now(zona_colombia).strftime("%I:%M %p")
-        referencia_completa = f"PUSH-{int(datetime.now().timestamp())} • {hora_actual}"
+    remitente = resultado['remitente']
+    monto_limpio = resultado['monto']
 
-        conn = get_db_connection()
-        if not conn: return jsonify({'status': 'error bd'}), 500
-        try:
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+    zona_colombia = timezone(timedelta(hours=-5))
+    hora_actual = datetime.now(zona_colombia).strftime("%I:%M %p")
+    referencia_completa = f"PUSH-{int(datetime.now().timestamp())} • {hora_actual}"
 
-            cur.execute("SELECT id FROM usuarios WHERE verificado = TRUE ORDER BY id DESC LIMIT 1;")
-            user = cur.fetchone()
-            user_id = user['id'] if user else 1
+    conn = get_db_connection()
+    if not conn: return jsonify({'status': 'error bd'}), 500
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("SELECT * FROM transacciones WHERE estado = 'PENDIENTE' AND usuario_id = %s ORDER BY id DESC LIMIT 1;", (user_id,))
-            pago_pendiente = cur.fetchone()
+        # Buscar un usuario activo o por defecto
+        cur.execute("SELECT id FROM usuarios WHERE verificado = TRUE ORDER BY id DESC LIMIT 1;")
+        user = cur.fetchone()
+        user_id = user['id'] if user else 1
 
-            if pago_pendiente:
-                cur.execute(
-                    "UPDATE transacciones SET estado = 'APROBADO', celular = %s, monto = %s WHERE id = %s;",
-                    (remitente, monto_limpio if monto_limpio > 0 else pago_pendiente['monto'], pago_pendiente['id'])
-                )
-            else:
-                cur.execute(
-                    "INSERT INTO transacciones (usuario_id, celular, monto, referencia, estado) VALUES (%s, %s, %s, %s, 'APROBADO');",
-                    (user_id, remitente, monto_limpio, referencia_completa)
-                )
+        # Si hay un cobro pendiente, lo actualiza a APROBADO con el nombre/monto
+        cur.execute("SELECT * FROM transacciones WHERE estado = 'PENDIENTE' AND usuario_id = %s ORDER BY id DESC LIMIT 1;", (user_id,))
+        pago_pendiente = cur.fetchone()
 
-            conn.commit()
-            cur.close()
-            return jsonify({'status': 'exito'}), 200
-        finally:
-            conn.close()
+        if pago_pendiente:
+            cur.execute(
+                "UPDATE transacciones SET estado = 'APROBADO', celular = %s, monto = %s WHERE id = %s;",
+                (remitente, monto_limpio if monto_limpio > 0 else pago_pendiente['monto'], pago_pendiente['id'])
+            )
+        else:
+            # Si no había cobro pendiente, registra el pago recibido directamente
+            cur.execute(
+                "INSERT INTO transacciones (usuario_id, celular, monto, referencia, estado) VALUES (%s, %s, %s, %s, 'APROBADO');",
+                (user_id, remitente, monto_limpio, referencia_completa)
+            )
 
-    return jsonify({'status': 'ignorado'}), 200
+        conn.commit()
+        cur.close()
+        return jsonify({'status': 'exito', 'remitente': remitente, 'monto': monto_limpio}), 200
+    finally:
+        conn.close()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
