@@ -1,6 +1,0 @@
-from flask import Flask, send_from_directory
-
-# Ruta para descargar el APK de Tapago POS
-@app.route('/descargar-apk')
-def descargar_apk():
-    return send_from_directory('static', 'tapago-pos.apk', as_attachment=True)
