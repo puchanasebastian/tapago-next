@@ -12,12 +12,16 @@ from psycopg2.extras import RealDictCursor
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from itsdangerous import URLSafeTimedSerializer, SignatureExpired, BadTimeSignature
+from authlib.integrations.flask_client import OAuth
 import resend
 
 load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'tapago-secret-key-2026')
+
+# Permitir transporte HTTP/HTTPS inseguro temporalmente para librerías OAuth si aplica
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 # Configuración de Base de Datos
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -30,6 +34,16 @@ serializer = URLSafeTimedSerializer(app.secret_key)
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
+
+# Configuración de Google OAuth
+oauth = OAuth(app)
+google = oauth.register(
+    name='google',
+    client_id=os.environ.get('GOOGLE_CLIENT_ID'),
+    client_secret=os.environ.get('GOOGLE_CLIENT_SECRET'),
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={'scope': 'openid email profile'}
+)
 
 class Usuario(UserMixin):
     def __init__(self, id, nombre, correo, nequi, verificado=False):
@@ -124,10 +138,66 @@ def enviar_correo_async(email, link):
 def enviar_correo_confirmacion(email):
     token = serializer.dumps(email, salt='email-confirm-salt')
     link = url_for('confirmar_email', token=token, _external=True)
-    
-    # Se envía en segundo plano usando threading para no demorar la respuesta web
     thread = threading.Thread(target=enviar_correo_async, args=(email, link))
     thread.start()
+
+# RUTA PARA LOGUEARSE CON GOOGLE
+@app.route('/login/google')
+def login_google():
+    redirect_uri = url_for('google_authorize', _external=True)
+    return google.authorize_redirect(redirect_uri)
+
+# RUTA DE RETORNO TRAS AUTENTICAR CON GOOGLE
+@app.route('/login/google/authorized')
+def google_authorize():
+    try:
+        token = google.authorize_access_token()
+        user_info = token.get('userinfo')
+        if not user_info:
+            flash('No se pudo obtener información de Google.', 'danger')
+            return redirect(url_for('login'))
+
+        correo = user_info.get('email', '').lower().strip()
+        nombre = user_info.get('name', 'Usuario Google')
+
+        conn = get_db_connection()
+        if not conn:
+            flash('Error de conexión a la base de datos.', 'danger')
+            return redirect(url_for('login'))
+
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT * FROM usuarios WHERE correo = %s;", (correo,))
+            u = cur.fetchone()
+
+            if u:
+                # Si el usuario ya existe, lo marcamos verificado y lo logueamos
+                cur.execute("UPDATE usuarios SET verificado = TRUE WHERE id = %s;", (u['id'],))
+                conn.commit()
+                usuario = Usuario(u['id'], u['nombre'], u['correo'], u['nequi'], True)
+            else:
+                # Si es un usuario nuevo, lo registramos directamente como verificado
+                password_dummy = generate_password_hash(os.urandom(16).hex())
+                cur.execute(
+                    "INSERT INTO usuarios (nombre, correo, nequi, password, verificado) VALUES (%s, %s, %s, %s, TRUE) RETURNING id;",
+                    (nombre, correo, "0000000000", password_dummy)
+                )
+                conn.commit()
+                nuevo_id = cur.fetchone()['id']
+                usuario = Usuario(nuevo_id, nombre, correo, "0000000000", True)
+
+            cur.close()
+            login_user(usuario)
+            flash(f'¡Bienvenido {nombre}!', 'success')
+            return redirect(url_for('tendero'))
+
+        finally:
+            conn.close()
+
+    except Exception as e:
+        print(f"❌ Error en Google Login: {e}")
+        flash('Ocurrió un error al autenticar con Google.', 'danger')
+        return redirect(url_for('login'))
 
 @app.route('/registro', methods=['GET', 'POST'])
 def registro():
@@ -144,7 +214,6 @@ def registro():
             return redirect(url_for('registro'))
         try:
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            
             cur.execute("SELECT id, verificado FROM usuarios WHERE correo = %s;", (correo,))
             usuario_existente = cur.fetchone()
 
@@ -165,7 +234,6 @@ def registro():
             cur.close()
 
             enviar_correo_confirmacion(correo)
-
             return redirect(url_for('pantalla_espera_verificacion', email=correo))
 
         except Exception as e:
