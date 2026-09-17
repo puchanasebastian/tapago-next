@@ -5,7 +5,7 @@ import threading
 import traceback
 from io import StringIO
 from datetime import datetime, timezone, timedelta
-from flask import Flask, render_template, request, jsonify, Response, redirect, url_for, flash
+from flask import Flask, render_template, request, jsonify, Response, redirect, url_for, flash, send_from_directory
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -141,14 +141,14 @@ def enviar_correo_confirmacion(email):
     thread = threading.Thread(target=enviar_correo_async, args=(email, link))
     thread.start()
 
-# --- FUNCIÓN MEJORADA DE EXTRACCIÓN DE NOTIFICACIONES NEQUI / BRE-B / BANCOLOMBIA ---
+# --- FUNCIÓN DE EXTRACCIÓN DE NOTIFICACIONES NEQUI / BRE-B / BANCOLOMBIA ---
 def procesar_notificacion_nequi(texto):
     if not texto:
         return None
 
     texto_limpio = " ".join(texto.split())
 
-    # 1. Patrón Nequi a Nequi (Captura nombres como "Juan Aparicio", "Jose Restrepo", etc.)
+    # 1. Patrón Nequi a Nequi
     nequi_match = re.search(
         r'^(?!Te\s+enviaron)(.+?)\s+te\s+envi[oó]\s+\$([\d\.]+)', 
         texto_limpio, 
@@ -218,6 +218,11 @@ def procesar_notificacion_nequi(texto):
         }
 
     return None
+
+# --- RUTA PARA DESCARGAR EL APK DE TAPAGO POS ---
+@app.route('/descargar-apk')
+def descargar_apk():
+    return send_from_directory('.', 'app-debug.apk', as_attachment=True)
 
 # RUTA PARA LOGUEARSE CON GOOGLE
 @app.route('/login/google')
@@ -516,14 +521,12 @@ def webhook_notificacion():
     texto = data.get('texto', '') or data.get('mensaje', '')
     correo_envio = data.get('correo', '').lower().strip()
     
-    # Mantenemos tus logs detallados para depurar en Render
     print(f"--> NOTIFICACION RECIBIDA DESDE CELULAR: '{texto}' | Correo recibido: '{correo_envio}'", flush=True)
 
     if not texto:
         print("⚠️ Notificación ignorada: Texto vacío.", flush=True)
         return jsonify({'status': 'ignorado'}), 400
 
-    # Usar el procesador de notificaciones inteligente original
     resultado = procesar_notificacion_nequi(texto)
 
     if not resultado:
@@ -544,17 +547,14 @@ def webhook_notificacion():
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # 1. Tu lógica original: Buscar usuario verificado
         user_id = None
         
-        # Opción extra: Si el celular envía correo, busca primero por correo
         if correo_envio:
             cur.execute("SELECT id FROM usuarios WHERE correo = %s;", (correo_envio,))
             u_correo = cur.fetchone()
             if u_correo:
                 user_id = u_correo['id']
 
-        # Si no hay correo del celular, se ejecuta TU CÓDIGO ORIGINAL:
         if not user_id:
             cur.execute("SELECT id FROM usuarios WHERE verificado = TRUE ORDER BY id DESC LIMIT 1;")
             user = cur.fetchone()
@@ -562,19 +562,16 @@ def webhook_notificacion():
 
         print(f"👤 Asignando transacción al Usuario ID: {user_id}", flush=True)
 
-        # 2. Tu lógica original: Verificar cobro pendiente
         cur.execute("SELECT * FROM transacciones WHERE estado = 'PENDIENTE' AND usuario_id = %s ORDER BY id DESC LIMIT 1;", (user_id,))
         pago_pendiente = cur.fetchone()
 
         if pago_pendiente:
-            # Si hay un cobro pendiente, lo actualiza a APROBADO con el nombre/monto
             cur.execute(
                 "UPDATE transacciones SET estado = 'APROBADO', celular = %s, monto = %s WHERE id = %s;",
                 (remitente, monto_limpio if monto_limpio > 0 else pago_pendiente['monto'], pago_pendiente['id'])
             )
             print(f"✅ Pago pendiente ID {pago_pendiente['id']} actualizado a APROBADO", flush=True)
         else:
-            # Si no había cobro pendiente, registra el pago recibido directamente (Tu lógica original)
             cur.execute(
                 "INSERT INTO transacciones (usuario_id, celular, monto, referencia, estado) VALUES (%s, %s, %s, %s, 'APROBADO');",
                 (user_id, remitente, monto_limpio, referencia_completa)
