@@ -18,6 +18,14 @@
         .link a { color: #10b981; text-decoration: none; font-weight: 500; }
         .flash { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid #ef4444; padding: 12px; border-radius: 8px; font-size: 13px; margin-bottom: 15px; text-align: center; line-height: 1.4; }
         .flash-success { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid #10b981; }
+        
+        /* Estilos del separador y botón de Google */
+        .divider { display: flex; align-items: center; text-align: center; margin: 20px 0; color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+        .divider::before, .divider::after { content: ''; flex: 1; border-bottom: 1px solid #1e293b; }
+        .divider span { padding: 0 10px; }
+        .btn-google { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; background: #ffffff; color: #1e293b; border: none; padding: 12px; border-radius: 8px; font-weight: 600; font-size: 14px; text-decoration: none; transition: background 0.2s; }
+        .btn-google:hover { background: #f1f5f9; }
+        .btn-google img { width: 18px; height: 18px; }
     </style>
 </head>
 <body>
@@ -39,6 +47,14 @@
             <input type="password" name="password" placeholder="Contraseña" required>
             <button type="submit">Iniciar Sesión</button>
         </form>
+
+        <div class="divider"><span>O</span></div>
+
+        <a href="{{ url_for('login_google') }}" class="btn-google">
+            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google">
+            Continuar con Google
+        </a>
+
         <div class="link">¿No tienes cuenta? <a href="/registro">Regístrate gratis</a></div>
     </div>
 </body>
