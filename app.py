@@ -514,17 +514,20 @@ def exportar_excel():
 def webhook_notificacion():
     data = request.get_json() or {}
     texto = data.get('texto', '') or data.get('mensaje', '')
+    correo_envio = data.get('correo', '').lower().strip()
     
-    # AGREGA ESTA LÍNEA PARA VER EL TEXTO EXACTO EN RENDER:
-    print(f"--> NOTIFICACION RECIBIDA DESDE CELULAR: '{texto}'", flush=True)
-    
+    # Mantenemos tus logs detallados para depurar en Render
+    print(f"--> NOTIFICACION RECIBIDA DESDE CELULAR: '{texto}' | Correo recibido: '{correo_envio}'", flush=True)
+
     if not texto:
+        print("⚠️ Notificación ignorada: Texto vacío.", flush=True)
         return jsonify({'status': 'ignorado'}), 400
 
-    # Usar el procesador de notificaciones inteligente
+    # Usar el procesador de notificaciones inteligente original
     resultado = procesar_notificacion_nequi(texto)
 
     if not resultado:
+        print(f"⚠️ Formato no reconocido en el texto: '{texto}'", flush=True)
         return jsonify({'status': 'ignorado', 'reason': 'Formato no reconocido'}), 200
 
     remitente = resultado['remitente']
@@ -535,34 +538,56 @@ def webhook_notificacion():
     referencia_completa = f"PUSH-{int(datetime.now().timestamp())} • {hora_actual}"
 
     conn = get_db_connection()
-    if not conn: return jsonify({'status': 'error bd'}), 500
+    if not conn: 
+        return jsonify({'status': 'error bd'}), 500
+        
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Buscar un usuario activo o por defecto
-        cur.execute("SELECT id FROM usuarios WHERE verificado = TRUE ORDER BY id DESC LIMIT 1;")
-        user = cur.fetchone()
-        user_id = user['id'] if user else 1
+        # 1. Tu lógica original: Buscar usuario verificado
+        user_id = None
+        
+        # Opción extra: Si el celular envía correo, busca primero por correo
+        if correo_envio:
+            cur.execute("SELECT id FROM usuarios WHERE correo = %s;", (correo_envio,))
+            u_correo = cur.fetchone()
+            if u_correo:
+                user_id = u_correo['id']
 
-        # Si hay un cobro pendiente, lo actualiza a APROBADO con el nombre/monto
+        # Si no hay correo del celular, se ejecuta TU CÓDIGO ORIGINAL:
+        if not user_id:
+            cur.execute("SELECT id FROM usuarios WHERE verificado = TRUE ORDER BY id DESC LIMIT 1;")
+            user = cur.fetchone()
+            user_id = user['id'] if user else 1
+
+        print(f"👤 Asignando transacción al Usuario ID: {user_id}", flush=True)
+
+        # 2. Tu lógica original: Verificar cobro pendiente
         cur.execute("SELECT * FROM transacciones WHERE estado = 'PENDIENTE' AND usuario_id = %s ORDER BY id DESC LIMIT 1;", (user_id,))
         pago_pendiente = cur.fetchone()
 
         if pago_pendiente:
+            # Si hay un cobro pendiente, lo actualiza a APROBADO con el nombre/monto
             cur.execute(
                 "UPDATE transacciones SET estado = 'APROBADO', celular = %s, monto = %s WHERE id = %s;",
                 (remitente, monto_limpio if monto_limpio > 0 else pago_pendiente['monto'], pago_pendiente['id'])
             )
+            print(f"✅ Pago pendiente ID {pago_pendiente['id']} actualizado a APROBADO", flush=True)
         else:
-            # Si no había cobro pendiente, registra el pago recibido directamente
+            # Si no había cobro pendiente, registra el pago recibido directamente (Tu lógica original)
             cur.execute(
                 "INSERT INTO transacciones (usuario_id, celular, monto, referencia, estado) VALUES (%s, %s, %s, %s, 'APROBADO');",
                 (user_id, remitente, monto_limpio, referencia_completa)
             )
+            print(f"✅ Pago directo registrado de ${monto_limpio} por {remitente}", flush=True)
 
         conn.commit()
         cur.close()
         return jsonify({'status': 'exito', 'remitente': remitente, 'monto': monto_limpio}), 200
+
+    except Exception as e:
+        print(f"❌ ERROR EN BASE DE DATOS: {e}", flush=True)
+        return jsonify({'status': 'error', 'detail': str(e)}), 500
     finally:
         conn.close()
 
