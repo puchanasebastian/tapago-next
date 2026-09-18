@@ -26,6 +26,11 @@
         .btn-google { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; background: #ffffff; color: #1e293b; border: none; padding: 12px; border-radius: 8px; font-weight: 600; font-size: 14px; text-decoration: none; transition: background 0.2s; }
         .btn-google:hover { background: #f1f5f9; }
         .btn-google img { width: 18px; height: 18px; }
+
+        /* Estilo sutil para enlace de descarga */
+        .download-link { text-align: center; margin-top: 14px; }
+        .download-link a { color: #64748b; font-size: 12px; text-decoration: none; transition: color 0.2s; }
+        .download-link a:hover { color: #10b981; }
     </style>
 </head>
 <body>
@@ -56,19 +61,11 @@
         </a>
 
         <div class="link">¿No tienes cuenta? <a href="/registro">Regístrate gratis</a></div>
-    </div>
 
-    <!-- Enlace de registro -->
-        <p style="margin-top: 16px; font-size: 0.875rem; color: #9ca3af; text-align: center;">
-            ¿No tienes cuenta? <a href="/registro" style="color: #00d26a; text-decoration: none; font-weight: bold;">Regístrate gratis</a>
-        </p>
-    </div>
-
-        <!-- Enlace sutil de descarga -->
-        <div style="margin-top: 12px; text-align: center;">
-            <a href="/descargar-apk" style="color: #6b7280; font-size: 0.8rem; text-decoration: none; transition: color 0.2s;" onmouseover="this.style.color='#00d26a'" onmouseout="this.style.color='#6b7280'">
-                Descargar la app para Android
-            </a>
+        <!-- Enlace sutil de descarga centrado abajo -->
+        <div class="download-link">
+            <a href="/descargar-apk">Descargar la app para Android</a>
         </div>
-
-    </div> <!-- Cierre del contenedor/tarjeta del login -->
+    </div>
+</body>
+</html>
